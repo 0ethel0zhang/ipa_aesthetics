@@ -2,7 +2,7 @@ import os
 import sys
 import subprocess
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageOps
 
 # Mapping of prize to XMP Rating
 PRIZE_MAPPING = {
@@ -36,6 +36,23 @@ def update_xmp_rating(filepath, rating):
     except subprocess.CalledProcessError as e:
         print(f"Error updating {filepath}: {e.stderr}")
 
+def preprocess_image(img):
+    """Preprocess image to improve OCR accuracy."""
+    # Convert to grayscale
+    img = img.convert('L')
+
+    # Crop to the left side (left 40% as specified by user "left hand size")
+    width, height = img.size
+    img = img.crop((0, 0, int(width * 0.4), height))
+
+    # Upscale to ensure text is large enough for Tesseract
+    img = img.resize((img.width * 2, img.height * 2), resample=Image.LANCZOS)
+
+    # Auto contrast to make text pop
+    img = ImageOps.autocontrast(img)
+
+    return img
+
 def process_directory(directory):
     if not os.path.isdir(directory):
         print(f"Error: {directory} is not a valid directory.")
@@ -45,23 +62,44 @@ def process_directory(directory):
     directory = os.path.abspath(directory)
     print(f"Processing directory: {directory}")
 
-    files = [f for f in os.listdir(directory) if f.lower().endswith((".jpg", ".jpeg"))]
+    # Process common image formats
+    extensions = (".jpg", ".jpeg", ".png", ".tiff", ".webp")
+    files = [f for f in os.listdir(directory) if f.lower().endswith(extensions)]
     if not files:
-        print("No JPEG files found.")
+        print(f"No image files found in {directory}.")
         return
 
     for filename in files:
         filepath = os.path.join(directory, filename)
         try:
-            # Open image and perform OCR
-            img = Image.open(filepath)
-            text = pytesseract.image_to_string(img)
+            # Open image
+            with Image.open(filepath) as img:
+                # Preprocess for better OCR
+                processed_img = preprocess_image(img)
 
-            rating = get_rating_from_text(text)
-            if rating is not None:
-                update_xmp_rating(filepath, rating)
-            else:
-                print(f"Skipping {filepath}: No prize detected in OCR text.")
+                # Try multiple PSM modes and combine results
+                # PSM 6 is good for uniform blocks (like the prize text in some layouts)
+                # PSM 11 is good for sparse text
+                all_text = ""
+                for psm in [6, 11]:
+                    config = f'--oem 3 --psm {psm}'
+                    all_text += " " + pytesseract.image_to_string(processed_img, config=config)
+
+                rating = get_rating_from_text(all_text)
+
+                # Fallback: try original image if preprocessing was too aggressive
+                if rating is None:
+                    all_text_fallback = ""
+                    for psm in [6, 11]:
+                        config = f'--oem 3 --psm {psm}'
+                        all_text_fallback += " " + pytesseract.image_to_string(img, config=config)
+                    rating = get_rating_from_text(all_text_fallback)
+
+                if rating is not None:
+                    update_xmp_rating(filepath, rating)
+                else:
+                    print(f"Skipping {filepath}: No prize detected in OCR text.")
+                    # print(f"DEBUG text: {all_text}") # Uncomment for debugging
         except Exception as e:
             print(f"Error processing {filepath}: {e}")
 
