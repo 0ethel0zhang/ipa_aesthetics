@@ -1,0 +1,10 @@
+libraries:
+  - torch
+  - torchvision
+  - pillow
+  - pandas
+  - numpy
+  - pyyaml
+  - tqdm
+  - matplotlib
+  - scikit-learn
